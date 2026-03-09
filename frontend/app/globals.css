@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --cream: #f4eed7;
+  --pine: #173b2e;
+  --moss: #668b4f;
+  --sky: #c6deef;
+  --ink: #11201a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 10% 15%, rgba(255, 255, 255, 0.65) 0, rgba(255, 255, 255, 0) 30%),
+    radial-gradient(circle at 90% 85%, rgba(198, 222, 239, 0.5) 0, rgba(198, 222, 239, 0) 38%),
+    linear-gradient(135deg, #f7f2df 0%, #dcecd9 45%, #d3e5f2 100%);
+  font-family: var(--font-sans), "Segoe UI", sans-serif;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display), Georgia, serif;
+}
+
+.fade-up {
+  animation: fadeUp 520ms ease both;
+}
+
+.fade-up-delay {
+  animation: fadeUp 720ms ease both;
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 20px 50px rgba(34, 60, 50, 0.12);
+  backdrop-filter: blur(8px);
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

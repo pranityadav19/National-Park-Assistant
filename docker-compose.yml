@@ -1,0 +1,24 @@
+services:
+  backend:
+    build: ./backend
+    container_name: national-parks-backend
+    environment:
+      - NPS_API_KEY=${NPS_API_KEY:-}
+      - DATA_FILE=/app/data/parks_cache.json
+    volumes:
+      - parks-data:/app/data
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    container_name: national-parks-frontend
+    environment:
+      - NEXT_PUBLIC_API_BASE=http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  parks-data:
