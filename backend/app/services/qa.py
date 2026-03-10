@@ -26,17 +26,16 @@ class QAService:
         if not parks:
             return None
 
-        # 1) Exact or contains on full name.
         if park_name:
             target = park_name.strip().lower()
             exact = next((p for p in parks if (p.get("full_name") or "").lower() == target), None)
             if exact:
                 return exact
+
             contains = next((p for p in parks if target in (p.get("full_name") or "").lower()), None)
             if contains:
                 return contains
 
-        # 2) Normalized token matching for name variants.
         if park_name:
             normalized_target = self._normalize_name(park_name)
             if normalized_target:
@@ -52,13 +51,11 @@ class QAService:
                 if norm_contains:
                     return norm_contains
 
-                # 3) Fuzzy match as fallback.
                 names = [p.get("full_name") or "" for p in parks]
                 close = difflib.get_close_matches(park_name, names, n=1, cutoff=0.62)
                 if close:
                     return next((p for p in parks if (p.get("full_name") or "") == close[0]), None)
 
-        # 4) If no explicit park_name, try detecting park from question text.
         if question:
             q = question.lower()
             by_question = next((p for p in parks if (p.get("full_name") or "").lower() in q), None)
@@ -83,14 +80,41 @@ class QAService:
     @staticmethod
     def _detect_intent(question: str) -> str:
         q = question.lower()
+
         if any(k in q for k in ["cost", "fee", "price", "ticket", "entrance", "pass"]):
             return "fees"
+
         if any(k in q for k in ["open", "close", "year round", "hours", "time", "seasonal closure"]):
             return "hours"
-        if any(k in q for k in ["best season", "best time", "when should", "weather", "winter", "summer", "spring", "fall", "autumn"]):
+
+        if any(
+            k in q
+            for k in [
+                "best season",
+                "best time",
+                "when should",
+                "weather",
+                "winter",
+                "summer",
+                "spring",
+                "fall",
+                "autumn",
+            ]
+        ):
             return "season"
+
         if any(k in q for k in ["do", "activity", "hike", "camp", "things to do"]):
             return "activities"
+
+        if any(
+            k in q
+            for k in ["stay", "hotel", "lodging", "accommodation", "where to stay", "nearby town", "towns nearby"]
+        ):
+            return "lodging"
+
+        if any(k in q for k in ["animal", "animals", "wildlife", "bear", "bison", "elk", "birds", "mammals"]):
+            return "wildlife"
+
         return "general"
 
     @staticmethod
@@ -100,12 +124,14 @@ class QAService:
     def _retrieve_chunks(self, question: str, chunks: list[dict[str, Any]], limit: int = 4) -> list[dict[str, Any]]:
         q_terms = self._tokenize(question)
         scored: list[tuple[int, dict[str, Any]]] = []
+
         for chunk in chunks:
             content = (chunk.get("content") or "").strip()
             if not content:
                 continue
             if content.startswith("{") and "'id':" in content:
                 continue
+
             c_terms = self._tokenize(content)
             overlap = len(q_terms.intersection(c_terms))
             source_bonus = max(0, 4 - self.SOURCE_PRIORITY.get(chunk.get("source_type", ""), 10))
@@ -125,11 +151,13 @@ class QAService:
         texts = [(c.get("content") or "").strip() for c in chunks if (c.get("content") or "").strip()]
         if not texts:
             return ""
+
         snippets = best_snippets(question, texts, limit=limit)
         cleaned = []
         for s in snippets:
             one_line = re.sub(r"\s+", " ", s).strip()
             cleaned.append(one_line[:220])
+
         return " ".join(cleaned)
 
     def ask(self, question: str, park_code: str | None = None, park_name: str | None = None) -> AskResponse:
@@ -145,19 +173,17 @@ class QAService:
         if not park:
             park = self._resolve_park(parks, park_name=park_name, question=question)
 
-        if not park and parks:
-            park = sorted(parks, key=lambda p: (p.get("full_name") or "zzz"))[0]
-
         if not park:
             return AskResponse(
-                answer="I could not find a park record yet. Run ingestion endpoints first.",
-                confidence_note="Low confidence: no ingested park data found.",
+                answer="I could not confidently match the requested park. Please try a more specific park name.",
+                confidence_note="Low confidence: park name could not be resolved confidently.",
                 citations=[],
             )
 
         park_code_value = park.get("park_code")
         scoped = [c for c in chunks if c.get("park_code") in (park_code_value, None)]
         scoped.sort(key=lambda c: self.SOURCE_PRIORITY.get(c.get("source_type", ""), 99))
+
         retrieved = self._retrieve_chunks(question, scoped, limit=4)
         context_text = self._extract_evidence(question, retrieved, limit=2)
         intent = self._detect_intent(question)
@@ -168,21 +194,32 @@ class QAService:
         description = park.get("description") or "No additional summary available."
 
         park_title = park.get("full_name", "Park")
+
         if intent == "fees":
             answer = f"{park_title}: Current entrance fees: {fee}"
             if "no official fee data" in fee.lower():
-                answer += f" General park summary: {description}"
+                answer += f" {description}"
+
         elif intent == "hours":
             answer = f"{park_title}: Open/access guidance: {hours}"
-        elif intent == "season":
-            answer = f"{park_title}: Best season/weather guidance: {weather}"
-        elif intent == "activities":
-            answer = f"{park_title}: Visitor summary: {description} Hours/access: {hours}"
-        else:
-            answer = f"{park_title}: Fees: {fee} Hours: {hours} Season: {weather}"
 
-        if context_text:
-            answer += f" Retrieved context: {context_text}"
+        elif intent == "season":
+            answer = (
+                f"{park_title}: The best time to visit is usually spring or fall, "
+                f"when weather conditions are often more comfortable. {weather}"
+            )
+
+        elif intent == "activities":
+            answer = f"{park_title}: {description} Hours/access: {hours}"
+
+        elif intent == "lodging":
+            answer = f"{park_title}: Nearby stay and travel guidance: {context_text or description}"
+
+        elif intent == "wildlife":
+            answer = f"{park_title}: Wildlife guidance: {context_text or description}"
+
+        else:
+            answer = f"{park_title}: {context_text or description}"
 
         citations = [
             Citation(
@@ -196,6 +233,10 @@ class QAService:
 
         return AskResponse(
             answer=answer,
-            confidence_note=f"Intent detected: {intent}. Answer grounded in retrieved NPS/Wikivoyage cache snippets; verify official alerts for real-time closures.",
+            confidence_note=(
+                f"Intent detected: {intent}. "
+                "Answer grounded in retrieved NPS/Wikivoyage cache snippets; "
+                "verify official alerts for real-time closures."
+            ),
             citations=citations,
         )
