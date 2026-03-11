@@ -341,7 +341,36 @@ class QAService:
 
         if intent == "fees":
             if fee:
-                answer = f"{park_title} entrance fees: {fee}{url_note}"
+                # Split fee summary into individual entries and return only the most relevant ones
+                entries = [e.strip() for e in re.split(r";(?=\s*[A-Z])", fee) if e.strip()]
+                if len(entries) > 1:
+                    # Strip generic and park-name words so they don't skew scoring
+                    park_tokens = {t.lower() for t in re.findall(r"[a-zA-Z]{3,}", park_title)}
+                    stop = {"how", "much", "does", "cost", "much", "what", "the", "fee", "fees",
+                            "entrance", "price", "ticket", "pay", "tell", "about", "for", "get", "into"}
+                    q_fee_terms = [t.lower() for t in re.findall(r"[a-zA-Z]{3,}", question)
+                                   if t.lower() not in stop and t.lower() not in park_tokens]
+                    q_bigrams = {f"{q_fee_terms[i]} {q_fee_terms[i+1]}" for i in range(len(q_fee_terms) - 1)}
+                    scored_entries = []
+                    for entry in entries:
+                        entry_lower = entry.lower()
+                        # Use whole-word matching to avoid "enter" matching "entering"
+                        score = sum(2 for bg in q_bigrams if re.search(r'\b' + re.escape(bg) + r'\b', entry_lower))
+                        score += sum(1 for t in q_fee_terms if re.search(r'\b' + re.escape(t) + r'\b', entry_lower))
+                        scored_entries.append((score, entry))
+                    scored_entries.sort(key=lambda x: x[0], reverse=True)
+                    top_score = scored_entries[0][0]
+                    if top_score >= 1 and q_fee_terms:
+                        # Specific match found — return just the best entry
+                        relevant = [scored_entries[0][1]]
+                    else:
+                        # General question — default to private vehicle + per person
+                        relevant = [e for e in entries if "private vehicle" in e.lower()][:1]
+                        relevant += [e for e in entries if "per person" in e.lower()][:1]
+                        relevant = relevant or entries[:2]
+                    answer = f"{park_title} entrance fees: {'; '.join(relevant)}{url_note}"
+                else:
+                    answer = f"{park_title} entrance fees: {fee}{url_note}"
             else:
                 answer = f"{park_title}: {context_text or description}{url_note}"
 
