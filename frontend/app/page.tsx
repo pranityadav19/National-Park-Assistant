@@ -19,6 +19,13 @@ type Park = {
   full_name: string;
 };
 
+type ParkPhoto = {
+  park_code: string;
+  full_name: string;
+  url: string;
+  alt: string;
+};
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 const EXAMPLES = [
@@ -35,30 +42,21 @@ export default function HomePage() {
   const [response, setResponse] = useState<AskResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [parks, setParks] = useState<Park[]>([]);
+  const [photos, setPhotos] = useState<ParkPhoto[]>([]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    const run = async () => {
-      if (!parkName.trim()) {
-        setParks([]);
-        return;
-      }
-      try {
-        const res = await fetch(`${API_BASE}/parks?query=${encodeURIComponent(parkName)}`, {
-          signal: controller.signal
-        });
-        if (!res.ok) {
-          return;
-        }
-        const data = (await res.json()) as Park[];
-        setParks(data.slice(0, 8));
-      } catch {
-        setParks([]);
-      }
-    };
-    run();
-    return () => controller.abort();
-  }, [parkName]);
+    fetch(`${API_BASE}/parks/photos`)
+      .then((r) => r.json())
+      .then((data) => setPhotos(data as ParkPhoto[]))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/parks`)
+      .then((r) => r.json())
+      .then((data) => setParks(data as Park[]))
+      .catch(() => {});
+  }, []);
 
   const heroImage = useMemo(() => {
     const query = parkName.trim() || "national park";
@@ -109,23 +107,41 @@ export default function HomePage() {
         </div>
       </section>
 
+      {photos.length > 0 && (
+        <section className="mt-5 overflow-x-auto">
+          <div className="flex gap-3 pb-2" style={{ width: "max-content" }}>
+            {photos.map((photo) => (
+              <div key={photo.park_code} className="relative h-44 w-64 flex-shrink-0 overflow-hidden rounded-2xl">
+                <img
+                  src={photo.url}
+                  alt={photo.alt}
+                  className="h-full w-full object-cover"
+                />
+                <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent px-3 py-2">
+                  <p className="text-xs font-semibold text-white leading-tight">{photo.full_name}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="fade-up-delay mt-6 grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
         <form onSubmit={onSubmit} className="glass rounded-3xl p-5 md:p-7">
           <div className="grid gap-4 md:grid-cols-2">
             <div>
               <label className="text-xs font-semibold uppercase tracking-[0.15em] text-gray-700">Park</label>
-              <input
-                list="parks-list"
+              <select
                 className="mt-2 w-full rounded-xl border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-emerald-700"
                 value={parkName}
                 onChange={(e) => setParkName(e.target.value)}
-                placeholder="Yellowstone"
-              />
-              <datalist id="parks-list">
+              >
                 {parks.map((p) => (
-                  <option key={p.park_code} value={p.full_name} />
+                  <option key={p.park_code} value={p.full_name}>
+                    {p.full_name}
+                  </option>
                 ))}
-              </datalist>
+              </select>
             </div>
 
             <div>

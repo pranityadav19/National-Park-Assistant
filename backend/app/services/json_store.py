@@ -43,3 +43,39 @@ class JSONStore:
         chunks.append(chunk)
         data["source_chunks"] = chunks
         self.save(data)
+
+    def batch_upsert_parks(self, parks: list[dict]) -> None:
+        """Load once, upsert all parks, save once."""
+        data = self.load()
+        existing = data.get("parks", [])
+        code_to_idx = {(p.get("park_code") or "").lower(): i for i, p in enumerate(existing)}
+        for park in parks:
+            code = (park.get("park_code") or "").lower()
+            if not code:
+                continue
+            if code in code_to_idx:
+                idx = code_to_idx[code]
+                existing[idx].update({k: v for k, v in park.items() if v not in (None, "")})
+            else:
+                existing.append(park)
+                code_to_idx[code] = len(existing) - 1
+        data["parks"] = existing
+        self.save(data)
+
+    def batch_add_source_chunks(self, chunks: list[dict]) -> None:
+        """Load once, add all chunks, save once."""
+        if not chunks:
+            return
+        data = self.load()
+        existing = data.get("source_chunks", [])
+        existing.extend(chunks)
+        data["source_chunks"] = existing
+        self.save(data)
+
+    def clear_source_chunks_by_type(self, source_type: str) -> None:
+        """Remove all chunks of a given source_type before re-ingesting."""
+        data = self.load()
+        data["source_chunks"] = [
+            c for c in data.get("source_chunks", []) if c.get("source_type") != source_type
+        ]
+        self.save(data)

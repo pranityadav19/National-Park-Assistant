@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
-from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
@@ -14,133 +14,182 @@ from app.utils.text import normalize_whitespace
 class BaseScraper:
     async def fetch(self, url: str) -> str:
         headers = {"User-Agent": settings.user_agent}
-        async with httpx.AsyncClient(timeout=settings.request_timeout_seconds, headers=headers, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.request_timeout_seconds, headers=headers, follow_redirects=True
+        ) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             return resp.text
 
 
 class NPSSiteScraper(BaseScraper):
-    async def ingest(self, limit: int = 10) -> int:
-        store = JSONStore()
-        data = store.load()
-        parks = data.get("parks", [])[:limit]
-        count = 0
+    # Subpages to scrape per park (appended to https://www.nps.gov/{code}/)
+    SUBPAGES = [
+        ("", "main"),
+        ("planyourvisit/", "plan_your_visit"),
+        ("nature/", "nature"),
+        ("historyculture/", "history_culture"),
+        ("learn/historyculture/", "history_culture"),
+        ("getinvolved/", "get_involved"),
+    ]
 
-        for park in parks:
-            urls = []
-            if park.get("url"):
-                urls.append(park["url"])
-            code = (park.get("park_code") or "").lower()
-            if code:
-                urls.append(f"https://www.nps.gov/{code}/index.htm")
+    async def _scrape_park(self, park: dict) -> list[dict]:
+        code = (park.get("park_code") or "").lower()
+        if not code:
+            return []
 
-            html = None
-            resolved_url = None
-            for candidate in urls:
-                try:
-                    html = await self.fetch(candidate)
-                    resolved_url = candidate
-                    break
-                except httpx.HTTPError:
-                    continue
+        chunks: list[dict] = []
+        seen_sections: set[str] = set()
 
-            if not html or not resolved_url:
+        for subpath, section_name in self.SUBPAGES:
+            if section_name in seen_sections:
                 continue
-
-            soup = BeautifulSoup(html, "lxml")
-            paragraphs = [normalize_whitespace(p.get_text(" ")) for p in soup.select("main p")][:20]
-            text = "\n".join([p for p in paragraphs if p])[:6000]
-            if not text:
-                continue
-
-            store.add_source_chunk(
-                {
-                    "park_code": park.get("park_code"),
-                    "source_type": "nps_site",
-                    "source_url": resolved_url,
-                    "section": "main_content",
-                    "content": text,
-                    "fetched_at": datetime.utcnow().isoformat(),
-                }
-            )
-            count += 1
-
-        return count
-
-
-class NPSDocsScraper(BaseScraper):
-    DOCS_URL = "https://www.nps.gov/subjects/developer/api-documentation.htm"
-
-    async def ingest(self) -> int:
-        try:
-            html = await self.fetch(self.DOCS_URL)
-        except httpx.HTTPError:
-            return 0
-
-        soup = BeautifulSoup(html, "lxml")
-        headings = [normalize_whitespace(h.get_text(" ")) for h in soup.select("h1, h2, h3")][:30]
-        links = [urljoin(self.DOCS_URL, a.get("href", "")) for a in soup.select("a[href]")][:50]
-        content = normalize_whitespace(" | ".join(headings + links))[:7000]
-        if not content:
-            return 0
-
-        store = JSONStore()
-        store.add_source_chunk(
-            {
-                "park_code": None,
-                "source_type": "nps_docs",
-                "source_url": self.DOCS_URL,
-                "section": "documentation",
-                "content": content,
-                "fetched_at": datetime.utcnow().isoformat(),
-            }
-        )
-        return 1
-
-
-class WikivoyageScraper(BaseScraper):
-    BASE = "https://en.wikivoyage.org/wiki/"
-
-    async def ingest(self, limit: int = 10) -> int:
-        store = JSONStore()
-        data = store.load()
-        parks = data.get("parks", [])[:limit]
-        count = 0
-
-        for park in parks:
-            name = park.get("full_name")
-            if not name:
-                continue
-            slug = name.replace(" ", "_")
-            url = f"{self.BASE}{slug}"
+            url = f"https://www.nps.gov/{code}/{subpath}"
             try:
                 html = await self.fetch(url)
             except httpx.HTTPError:
                 continue
 
             soup = BeautifulSoup(html, "lxml")
-            sections = []
-            for header in soup.select("h2, h3")[:20]:
-                title = normalize_whitespace(header.get_text(" ")).lower()
-                if any(k in title for k in ["climate", "best time", "understand", "get in", "see", "do"]):
-                    sections.append(title)
+            content_parts = []
+            # NPS.gov uses .cs_control divs; fall back to role=main or body paragraphs
+            selectors = [
+                ".cs_control h1, .cs_control h2, .cs_control h3, .cs_control p, .cs_control li",
+                "[role='main'] h1, [role='main'] h2, [role='main'] h3, [role='main'] p, [role='main'] li",
+                "main h1, main h2, main h3, main p, main li",
+                "article h2, article h3, article p, article li",
+                ".Component p, .container p",
+            ]
+            for sel in selectors:
+                elems = soup.select(sel)[:60]
+                if elems:
+                    for elem in elems:
+                        text = normalize_whitespace(elem.get_text(" "))
+                        if text and len(text) > 20:
+                            content_parts.append(text)
+                    break
 
-            body = [normalize_whitespace(p.get_text(" ")) for p in soup.select("p")[:30]]
-            content = normalize_whitespace(" | ".join(sections + body))[:7000]
-            if not content:
+            text = "\n".join(content_parts)[:8000]
+            if not text:
                 continue
 
-            store.add_source_chunk(
-                {
-                    "park_code": park.get("park_code"),
-                    "source_type": "wikivoyage",
-                    "source_url": url,
-                    "section": "travel_context",
-                    "content": content,
-                    "fetched_at": datetime.utcnow().isoformat(),
-                }
-            )
-            count += 1
+            seen_sections.add(section_name)
+            chunks.append({
+                "park_code": park.get("park_code"),
+                "source_type": "nps_site",
+                "source_url": url,
+                "section": section_name,
+                "content": text,
+                "fetched_at": datetime.utcnow().isoformat(),
+            })
 
-        return count
+        return chunks
+
+    async def ingest(self, limit: int | None = None) -> int:
+        store = JSONStore()
+        data = store.load()
+        parks = data.get("parks", [])
+        if limit is not None:
+            parks = parks[:limit]
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def scrape_with_semaphore(park: dict) -> list[dict]:
+            async with semaphore:
+                return await self._scrape_park(park)
+
+        results = await asyncio.gather(
+            *[scrape_with_semaphore(p) for p in parks], return_exceptions=True
+        )
+
+        all_chunks: list[dict] = []
+        for result in results:
+            if isinstance(result, list):
+                all_chunks.extend(result)
+
+        store.clear_source_chunks_by_type("nps_site")
+        store.batch_add_source_chunks(all_chunks)
+        return len(all_chunks)
+
+
+class WikivoyageScraper(BaseScraper):
+    BASE = "https://en.wikivoyage.org/wiki/"
+
+    async def _scrape_park(self, park: dict) -> dict | None:
+        name = park.get("full_name")
+        if not name:
+            return None
+
+        slug = name.replace(" ", "_")
+        url = f"{self.BASE}{slug}"
+        try:
+            html = await self.fetch(url)
+        except httpx.HTTPError:
+            return None
+
+        soup = BeautifulSoup(html, "lxml")
+        content_parts: list[str] = []
+        current_section = "Overview"
+
+        # Wikivoyage: use #mw-content-text which always contains the article body
+        # (soup.find(class_="mw-parser-output") returns the wrong element — there are multiple)
+        mw_output = soup.find(id="mw-content-text") or soup.body or soup
+        for elem in mw_output.find_all(["h2", "h3", "p", "ul"])[:80]:
+            if elem.name in ("h2", "h3"):
+                current_section = normalize_whitespace(elem.get_text(" "))
+            elif elem.name == "p":
+                text = normalize_whitespace(elem.get_text(" "))
+                if text and len(text) > 20:
+                    content_parts.append(f"[{current_section}] {text}")
+            elif elem.name == "ul":
+                items = [
+                    normalize_whitespace(li.get_text(" "))
+                    for li in elem.find_all("li")
+                    if li.get_text(" ").strip()
+                ]
+                if items:
+                    content_parts.append(f"[{current_section}] " + "; ".join(items[:12]))
+
+        content = "\n".join(content_parts)[:8000]
+        if not content:
+            return None
+
+        return {
+            "park_code": park.get("park_code"),
+            "source_type": "wikivoyage",
+            "source_url": url,
+            "section": "travel_guide",
+            "content": content,
+            "fetched_at": datetime.utcnow().isoformat(),
+        }
+
+    async def ingest(self, limit: int | None = None) -> int:
+        store = JSONStore()
+        data = store.load()
+        parks = data.get("parks", [])
+        if limit is not None:
+            parks = parks[:limit]
+
+        semaphore = asyncio.Semaphore(5)
+
+        async def scrape_with_semaphore(park: dict) -> dict | None:
+            async with semaphore:
+                return await self._scrape_park(park)
+
+        results = await asyncio.gather(
+            *[scrape_with_semaphore(p) for p in parks], return_exceptions=True
+        )
+
+        all_chunks = [r for r in results if isinstance(r, dict)]
+        store.clear_source_chunks_by_type("wikivoyage")
+        store.batch_add_source_chunks(all_chunks)
+        return len(all_chunks)
+
+
+class NPSDocsScraper(BaseScraper):
+    """Retained for API compatibility but no longer called by default."""
+
+    DOCS_URL = "https://www.nps.gov/subjects/developer/api-documentation.htm"
+
+    async def ingest(self) -> int:
+        return 0
